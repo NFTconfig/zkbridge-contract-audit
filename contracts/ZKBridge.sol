@@ -2,168 +2,225 @@
 
 pragma solidity ^0.8.0;
 
-import "./Governance.sol";
-import "./libraries/external/RLPReader.sol";
-import "./libraries/external/BytesLib.sol";
-import "./interfaces/IZKBridgeEntrypoint.sol";
-import "./interfaces/IZKBridgeReceiver.sol";
-import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Upgrade.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
-contract ZKBridge is Governance, IZKBridgeEntrypoint {
+import "./libraries/RLPReader.sol";
+import "./libraries/BytesLib.sol";
+import "./interfaces/IZKBridgeInner.sol";
+import "./interfaces/IZKBridgeReceiver.sol";
+import "./interfaces/IL2MessageSend.sol";
+import "./interfaces/IMptVerifier.sol";
+import "./interfaces/IBlockUpdater.sol";
+
+contract ZKBridge is Initializable, OwnableUpgradeable, IZKBridgeInner {
     using RLPReader for RLPReader.RLPItem;
     using RLPReader for bytes;
     using BytesLib for bytes;
 
+    event A(uint256 aa);
+
     bytes32 public constant MESSAGE_TOPIC = 0xb8abfd5c33667c7440a4fc1153ae39a24833dbe44f7eb19cbe5cd5f2583e4940;
+
+    uint16 public chainId;
+
+    bool public isL2;
+
+    IL2MessageSend public l2MessageSend;
+
+    // chainId => mptVerifierAddress
+    mapping(uint16 => IMptVerifier) public mptVerifiers;
+
+    // chainId => blockUpdaterAddress
+    mapping(uint16 => IBlockUpdater) public blockUpdaters;
+
+    mapping(bytes32 => uint64) public targetNonce;
+
+    // chainId => messageReceiveAddress
+    mapping(uint16 => address) public l2MessageReceives;
+
+    // chainId => zkBridgeAddress
+    mapping(uint16 => address) public trustedRemoteLookup;
+
+    mapping(bytes32 => bool) public completedTransfers;
+
+    mapping(uint16 => uint256) public fee;
 
     struct LogMessage {
         uint16 dstChainId;
-        uint64 sequence;
+        uint64 nonce;
         address dstAddress;
-        bytes32 srcAddress;
-        bytes32 srcZkBridge;
+        address srcAddress;
+        address srcZkBridge;
         bytes payload;
     }
-
 
     struct Payload {
         uint16 srcChainId;
         uint16 dstChainId;
         address srcAddress;
         address dstAddress;
-        uint64 sequence;
+        uint64 nonce;
         bytes uaPayload;
     }
 
-    modifier initializer() {
-        address implementation = ERC1967Upgrade._getImplementation();
-        require(!isInitialized(implementation), "already initialized");
-        _setInitialized(implementation);
-        _;
+    function initialize(uint16 _chainId, bool _isL2) public initializer {
+        __Ownable_init();
+        chainId = _chainId;
+        isL2 = _isL2;
     }
 
-    function initialize() initializer public virtual {
-        // this function needs to be exposed for an upgrade to pass
-    }
-
-    function send(uint16 dstChainId, address dstAddress, bytes memory payload) external payable returns (uint64 sequence) {
-        require(dstChainId != chainId(), "Cannot send to same chain");
-        sequence = _useSequence(chainId(), msg.sender);
-        payload = abi.encodePacked(bytes32("ZKBridge v2 version"), chainId(), dstChainId, msg.sender, dstAddress, sequence, payload);
-        if (isL2()) {
-            l2MessageSend().sendMessage{value : l2MessageSend().getFee()}(chainId(), msg.sender, dstChainId, dstAddress, sequence, payload);
+    function send(uint16 _dstChainId, address _dstAddress, bytes memory _payload) external payable returns (uint64 currentNonce) {
+        require(_dstChainId != chainId, "Cannot send to same chain");
+        require(msg.value >= _estimateFee(_dstChainId, _payload), "insufficient Fee");
+        currentNonce = _useNonce(msg.sender, _dstChainId, _dstAddress);
+        _payload = abi.encodePacked(chainId, _dstChainId, msg.sender, _dstAddress, currentNonce, _payload);
+        if (isL2) {
+            l2MessageSend.sendMessage{value : l2MessageSend.getFee()}(chainId, msg.sender, _dstChainId, _dstAddress, currentNonce, _payload);
         }
-        emit MessagePublished(msg.sender, dstChainId, sequence, dstAddress, payload);
+        emit MessagePublished(msg.sender, _dstChainId, currentNonce, _dstAddress, _payload);
     }
 
-    function sendFromL2(uint16 srcChainId,uint16 dstChainId, address dstAddress, bytes memory payload) external returns (uint64 sequence) {
-        require(msg.sender == l2MessageReceive(srcChainId), "caller is not the l2MessageReceive");
-        require(dstChainId != chainId(), "Cannot send to same chain");
-        sequence = _useSequence(chainId(), msg.sender);
-        emit MessagePublished(msg.sender, dstChainId, sequence, dstAddress, payload);
+    function sendFromL2(uint16 _srcChainId, uint16 _dstChainId, address _dstAddress, bytes memory _payload) external returns (uint64 currentNonce) {
+        require(msg.sender == l2MessageReceives[_srcChainId], "caller is not the l2MessageReceive");
+        require(_dstChainId != chainId, "Cannot send to same chain");
+        currentNonce = _useNonce(msg.sender, _dstChainId, _dstAddress);
+        emit MessagePublished(msg.sender, _dstChainId, currentNonce, _dstAddress, _payload);
     }
 
-    function validateTransactionProof(uint16 srcChainId, bytes32 srcBlockHash, uint256 logIndex, bytes memory mptProof) external {
-        IMptVerifier mptVerifier = mptVerifier(srcChainId);
-        IBlockUpdater blockUpdater = blockUpdater(srcChainId);
+    function validateTransactionProof(uint16 _srcChainId, bytes32 _srcBlockHash, uint256 _logIndex, bytes memory _mptProof) external {
+        IMptVerifier mptVerifier = mptVerifiers[_srcChainId];
+        IBlockUpdater blockUpdater = blockUpdaters[_srcChainId];
         require(address(mptVerifier) != address(0), "MptVerifier is not set");
         require(address(blockUpdater) != address(0), "Block Updater is not set");
 
-        IMptVerifier.Receipt memory receipt = mptVerifier.validateMPT(mptProof);
+        IMptVerifier.Receipt memory receipt = mptVerifier.validateMPT(_mptProof);
         require(receipt.state == 1, "Source Chain Transaction Failure");
+        require(blockUpdater.checkBlock(_srcBlockHash, receipt.receiptHash), "Block Header is not set");
 
-        require(blockUpdater.checkBlock(srcBlockHash, receipt.receiptHash), "Block Header is not set");
+        LogMessage memory logMessage = _parseLog(receipt.logs, _logIndex);
+        require(logMessage.srcZkBridge == trustedRemoteLookup[_srcChainId], "Destination chain is not a trusted sourcee");
+        require(logMessage.dstChainId == chainId, "Invalid destination chain");
 
-        LogMessage memory logMessage = _parseLog(receipt.logs, logIndex);
-        require(logMessage.srcZkBridge == zkBridgeContracts(srcChainId), "Invalid source ZKBridge");
-        require(logMessage.dstChainId == chainId(), "Invalid destination chain");
-        bytes32 hash;
-        hash = keccak256(abi.encode(srcChainId, logMessage.srcAddress, logMessage.sequence));
-        require(!isTransferCompleted(hash), "Message already executed.");
-        _setTransferCompleted(hash);
-        emit ExecutedMessage(_truncateAddress(logMessage.srcAddress), srcChainId, logMessage.sequence, logMessage.dstAddress, logMessage.payload);
-        (Payload memory p,bool isNewVersion) = _parsePayload(logMessage.payload);
-        if (isNewVersion) {
-            if (p.srcChainId != srcChainId) {
-                require(p.dstChainId == chainId(), "Invalid destination chain");
-                hash = keccak256(abi.encode(p.srcChainId, p.srcAddress, p.sequence));
-                require(!isTransferCompleted(hash), "Message already executed.");
-                _setTransferCompleted(hash);
-                emit ExecutedMessage(p.srcAddress, p.srcChainId, p.sequence, p.dstAddress, p.uaPayload);
-            }
-            IZKBridgeReceiver(p.dstAddress).zkReceive(p.srcChainId, p.srcAddress, p.sequence, p.uaPayload);
-        } else {
-            IZKBridgeReceiver(logMessage.dstAddress).zkReceive(srcChainId, _truncateAddress(logMessage.srcAddress), logMessage.sequence, logMessage.payload);
+        bytes32 hash = keccak256(abi.encode(_srcChainId, logMessage.srcAddress, logMessage.nonce));
+        require(!completedTransfers[hash], "Message already executed.");
+        completedTransfers[hash] = true;
+
+        Payload memory p = _parsePayload(logMessage.payload);
+        if (p.srcChainId != _srcChainId) {
+            require(p.dstChainId == chainId, "Invalid destination chain");
+            hash = keccak256(abi.encode(p.srcChainId, p.srcAddress, p.nonce));
+            require(!completedTransfers[hash], "Message already executed");
+            completedTransfers[hash] = true;
+            emit ExecutedMessage(p.srcAddress, p.srcChainId, p.nonce, p.dstAddress, p.uaPayload);
         }
+
+        IZKBridgeReceiver(p.dstAddress).zkReceive(p.srcChainId, p.srcAddress, p.nonce, p.uaPayload);
+        emit ExecutedMessage(logMessage.srcAddress, _srcChainId, logMessage.nonce, logMessage.dstAddress, logMessage.payload);
     }
 
-    function validateTransactionFromL2(uint16 srcChainId, address srcAddress, address dstAddress, uint64 sequence, bytes calldata payload) external {
-        require(msg.sender == l2MessageReceive(srcChainId), "caller is not the l2MessageReceive");
-        (Payload memory p,bool isNewVersion) = _parsePayload(payload);
-        require(isNewVersion, "Unsupported version");
-        require(srcChainId == p.srcChainId, "Invalid srcChainId");
-        require(p.dstChainId == chainId(), "Invalid destination chain");
-        bytes32 hash = keccak256(abi.encode(srcChainId, srcAddress, sequence));
-        require(!isTransferCompleted(hash), "Message already executed.");
-        _setTransferCompleted(hash);
+    function validateTransactionFromL2(uint16 _srcChainId, address _srcAddress, address _dstAddress, uint64 _nonce, bytes calldata _payload) external {
+        require(msg.sender == l2MessageReceives[_srcChainId], "caller is not the l2MessageReceive");
+        Payload memory p = _parsePayload(_payload);
+        require(_srcChainId == p.srcChainId, "Invalid srcChainId");
+        require(p.dstChainId == chainId, "Invalid destination chain");
 
-        IZKBridgeReceiver(dstAddress).zkReceive(srcChainId, srcAddress, sequence, p.uaPayload);
-        emit ExecutedMessage(srcAddress, srcChainId, sequence, dstAddress, payload);
+        bytes32 hash = keccak256(abi.encode(_srcChainId, _srcAddress, _nonce));
+        require(!completedTransfers[hash], "Message already executed");
+        completedTransfers[hash] = true;
+
+        IZKBridgeReceiver(_dstAddress).zkReceive(_srcChainId, _srcAddress, _nonce, p.uaPayload);
+        emit ExecutedMessage(_srcAddress, _srcChainId, _nonce, _dstAddress, _payload);
     }
 
-    function _useSequence(uint16 chainId, address emitter) internal returns (uint64 sequence) {
-        bytes32 hash = keccak256(abi.encode(chainId, emitter));
-        sequence = nextSequence(hash);
-        _setNextSequence(hash, sequence + 1);
+    function _useNonce(address _emitter, uint16 _dstChainId, address _dstAddress) internal returns (uint64 currentNonce) {
+        bytes32 hash = keccak256(abi.encode(_emitter, _dstChainId, _dstAddress));
+        currentNonce = targetNonce[hash];
+        targetNonce[hash]++;
     }
 
-    function _parseLog(bytes memory logsByte, uint256 logIndex) internal pure returns (LogMessage memory logMessage) {
-        RLPReader.RLPItem[] memory logs = logsByte.toRlpItem().toList();
-        if (logIndex != 0) {
-            logs = logs[logIndex + 2].toRlpBytes().toRlpItem().toList();
+    function _parseLog(bytes memory _logsByte, uint256 _logIndex) internal pure returns (LogMessage memory logMessage) {
+        RLPReader.RLPItem[] memory logs = _logsByte.toRlpItem().toList();
+        if (_logIndex != 0) {
+            require(logs.length > _logIndex + 2, "Invalid proof");
+            logs = logs[_logIndex + 2].toRlpBytes().toRlpItem().toList();
         }
         RLPReader.RLPItem[] memory topicItem = logs[1].toRlpBytes().toRlpItem().toList();
-        bytes32 topic = abi.decode(topicItem[0].toBytes(), (bytes32));
+        bytes32 topic = bytes32(topicItem[0].toUint());
         if (topic == MESSAGE_TOPIC) {
-            logMessage.srcZkBridge = logs[0].toBytes32();
-            logMessage.srcAddress = abi.decode(topicItem[1].toBytes(), (bytes32));
-            logMessage.dstChainId = abi.decode(topicItem[2].toBytes(), (uint16));
-            logMessage.sequence = abi.decode(topicItem[3].toBytes(), (uint64));
+            logMessage.srcZkBridge = logs[0].toAddress();
+            logMessage.srcAddress = abi.decode(topicItem[1].toBytes(), (address));
+            logMessage.dstChainId = uint16(topicItem[2].toUint());
+            logMessage.nonce = uint64(topicItem[3].toUint());
             (logMessage.dstAddress, logMessage.payload) = abi.decode(logs[2].toBytes(), (address, bytes));
         }
     }
 
-    function _parsePayload(bytes memory payload) internal pure returns (Payload memory txPayload, bool isNewVersion) {
+    function _parsePayload(bytes memory _payload) internal pure returns (Payload memory txPayload) {
         uint index = 0;
 
-        bytes32 tag = payload.toBytes32(index);
-        if (tag != bytes32("ZKBridge v2 version")) {
-            return (txPayload, isNewVersion);
-        }
-        index += 32;
-
-        txPayload.srcChainId = payload.toUint16(index);
+        txPayload.srcChainId = _payload.toUint16(index);
         index += 2;
 
-        txPayload.dstChainId = payload.toUint16(index);
+        txPayload.dstChainId = _payload.toUint16(index);
         index += 2;
 
-        txPayload.srcAddress = payload.toAddress(index);
+        txPayload.srcAddress = _payload.toAddress(index);
         index += 20;
 
-        txPayload.dstAddress = payload.toAddress(index);
+        txPayload.dstAddress = _payload.toAddress(index);
         index += 20;
 
-        txPayload.sequence = payload.toUint64(index);
+        txPayload.nonce = _payload.toUint64(index);
         index += 8;
-        txPayload.uaPayload = payload.slice(index, payload.length - index);
-
-        isNewVersion = true;
+        txPayload.uaPayload = _payload.slice(index, _payload.length - index);
     }
 
-    function _truncateAddress(bytes32 b) internal pure returns (address) {
-        require(bytes12(b) == 0, "invalid EVM address");
-        return address(uint160(uint256(b)));
+    function _estimateFee(uint16 _dstChainId, bytes memory _payload) internal view returns (uint256 bridgeFee) {
+        if (isL2) {
+            require(address(l2MessageSend) != address(0), "Not set l2MessageSend");
+            bridgeFee = l2MessageSend.getFee();
+        }
+        bridgeFee += fee[_dstChainId];
+    }
+
+    function estimateFee(uint16 _dstChainId, bytes memory _payload) external view returns (uint256 bridgeFee){
+        bridgeFee = _estimateFee(_dstChainId, _payload);
+    }
+
+    //----------------------------------------------------------------------------------
+    // onlyOwner
+    function setFee(uint16 _dstChainId, uint256 _fee) public onlyOwner {
+        fee[_dstChainId] = _fee;
+    }
+
+    function setTrustedRemoteAddress(uint16 _remoteChainId, address _remoteAddress) external onlyOwner {
+        require(_remoteAddress != address(0), "Zero address");
+        trustedRemoteLookup[_remoteChainId] = _remoteAddress;
+    }
+
+    function setMptVerifier(uint16 _chainId, address _mptVerifier) external onlyOwner {
+        require(_mptVerifier != address(0), "Zero address");
+        mptVerifiers[_chainId] = IMptVerifier(_mptVerifier);
+    }
+
+    function setBlockUpdater(uint16 _chainId, address _blockUpdater) external onlyOwner {
+        require(_blockUpdater != address(0), "Zero address");
+        blockUpdaters[_chainId] = IBlockUpdater(_blockUpdater);
+    }
+
+    function setL2MessageReceive(uint16 _chainId, address _l2MessageReceive) external onlyOwner {
+        require(_l2MessageReceive != address(0), "Zero address");
+        l2MessageReceives[_chainId] = _l2MessageReceive;
+    }
+
+    function setL2MessageSend(address _l2MessageSend) external onlyOwner {
+        require(_l2MessageSend != address(0), "Zero address");
+        l2MessageSend = IL2MessageSend(_l2MessageSend);
+    }
+
+    function claimFees() external onlyOwner {
+        payable(owner()).transfer(address(this).balance);
     }
 
     fallback() external payable {revert("unsupported");}
