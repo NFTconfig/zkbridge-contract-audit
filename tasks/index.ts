@@ -16,7 +16,7 @@ task('zkBridge:deploy', 'deploy zkBridge')
     .addOptionalParam('lock', 'lock time', 0, types.int)
     .addOptionalParam('id', 'chain id', 1, types.int)
     .addOptionalParam('admin', 'admin address', "0x71Ca974F27759C83920842D6b2747e4896e73f4A")
-    .addOptionalParam('isl2', 'is L2', "false")
+    .addOptionalParam('isl2', 'is L2', false,types.boolean)
     .addOptionalParam('chain', 'network name', "bsc_test")
     .setAction(async function (args, {ethers}) {
         console.log(`[depoly ZKBridge] start`)
