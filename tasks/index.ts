@@ -4,19 +4,14 @@ import fs from 'fs'
 import util from 'util'
 
 import {
-    MptVerifier,
-    MptVerifier__factory,
     OptimizedTransparentUpgradeableProxy,
     OptimizedTransparentUpgradeableProxy__factory,
     ZKBridge,
     ZKBridge__factory
 } from "../build/types"
 import path from "path";
-import {PromiseOrValue} from "../build/types/common";
-import {BigNumberish, BytesLike} from "ethers";
 
 const writeFile = util.promisify(fs.writeFile);
-//bsc:0xD3B4CbC4840cDa0c18d699a0545360B7a7F59D3D
 task('zkBridge:deploy', 'deploy zkBridge')
     .addOptionalParam('lock', 'lock time', 0, types.int)
     .addOptionalParam('id', 'chain id', 1, types.int)
@@ -31,7 +26,7 @@ task('zkBridge:deploy', 'deploy zkBridge')
         console.log(`ZKBridge:${ZKBridge.address}`)
         console.log(`npx hardhat verify --contract contracts/ZKBridge.sol:ZKBridge --network ${args.chain} ${ZKBridge.address}`)
         //@ts-ignore
-        let initData = web3Abi.encodeFunctionCall(abi, [args.id, false]);
+        let initData = web3Abi.encodeFunctionCall(abi, [args.id, args.isl2]);
         console.log(`initData:${initData}`)
 
         let ZKBridgeProxy__factory = <OptimizedTransparentUpgradeableProxy__factory>await ethers.getContractFactory("OptimizedTransparentUpgradeableProxy")
