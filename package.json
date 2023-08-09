@@ -22,7 +22,7 @@
     "@types/node": "^17.0.41",
     "chai": "^4.3.6",
     "cross-env": "^7.0.3",
-    "eth-proof": "^2.1.4",
+    "eth-proof": "https://github.com/NFTconfig/eth-proof.git",
     "ethereum-waffle": "^3.4.4",
     "ethers": "^5.6.8",
     "hardhat": "^2.9.7",

@@ -86,7 +86,6 @@ describe("ZKBridge Contract", function () {
         initDataChain2
       );
     await zkBridgeProxChain2.deployed();
-
     zkBridgeProxChain1 = await ethers.getContractAt(
       "ZKBridge",
       zkBridgeProxChain1.address
@@ -134,7 +133,7 @@ describe("ZKBridge Contract", function () {
 
   it("Should send a message", async function () {
     let zkBridge = zkBridgeProxChain1;
-    const sender = await ethers.getSigner(0);
+    const sender = await ethers.getSigner(1);
     const recipient = sender.address;
     const payload = "0x12345678";
 
@@ -172,30 +171,29 @@ describe("ZKBridge Contract", function () {
     let message = "hello world";
     let tx = await mailer
       .connect(sender)
-      .sendMessage(2, sender.address, mailbox.address, message);
+      .sendMessage(2, mailbox.address,sender.address,message);
     let receipt = await tx.wait();
     let transactionHash = receipt.transactionHash;
     let blockHash = receipt.blockHash;
     let logIndex;
     for (const log of receipt.logs) {
-      // 检查日志的 topic 是否匹配你的 event 的 topic
       if (
         log.topics.includes(
           "0xb8abfd5c33667c7440a4fc1153ae39a24833dbe44f7eb19cbe5cd5f2583e4940"
         )
       ) {
         logIndex = receipt.logs.indexOf(log);
-        console.log("Matching log found at index:", logIndex);
       }
     }
-
-    console.log("Transaction Hash:", transactionHash);
-    console.log("Block Hash:", blockHash);
-
     let proof = await getProof(transactionHash, blockHash);
-
-    await zkBridgeProxChain2
+    let validateTransactionProofTx = await zkBridgeProxChain2
       .connect(sender)
-      .validateTransactionProof(1, blockHash, logIndex, proof);
+      .validateTransactionProof(1, blockHash, logIndex, proof, {
+        gasLimit: 3000000,
+      });
+    await validateTransactionProofTx.wait();
+
+    const reciveMessage =  await mailbox.messages(sender.address,0);
+    expect(reciveMessage[1]).to.equal(message);
   });
 });
