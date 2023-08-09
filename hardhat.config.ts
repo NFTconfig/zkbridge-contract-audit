@@ -9,7 +9,7 @@ import './tasks/index'
 module.exports = {
     hardhat: {
         initialBaseFeePerGas: 0,
-        chainId: 31337,
+        chainId: 1337,
         hardfork: "shanghai",
         forking: {
             url: process.env.ETH_MAINNET_URL || "",
@@ -34,7 +34,10 @@ module.exports = {
             url: process.env.BSC_TESTNET_URL || "",
             accounts:
                 process.env.PRIVATE_KEY !== undefined ? [process.env.PRIVATE_KEY] : [],
-        }
+        },
+        localhost: {
+            url: "http://127.0.0.1:8545", // 本地节点的RPC URL
+          }
     },
     solidity: {
         compilers: [
