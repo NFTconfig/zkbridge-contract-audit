@@ -171,7 +171,7 @@ describe("ZKBridge Contract", function () {
     let message = "hello world";
     let tx = await mailer
       .connect(sender)
-      .sendMessage(2, mailbox.address,sender.address,message);
+      .sendMessage(2, mailbox.address, sender.address, message);
     let receipt = await tx.wait();
     let transactionHash = receipt.transactionHash;
     let blockHash = receipt.blockHash;
@@ -193,7 +193,83 @@ describe("ZKBridge Contract", function () {
       });
     await validateTransactionProofTx.wait();
 
-    const reciveMessage =  await mailbox.messages(sender.address,0);
+    const reciveMessage = await mailbox.messages(sender.address, 0);
     expect(reciveMessage[1]).to.equal(message);
+  });
+
+  it("setFee and estimateFee", async function () {
+    let zkBridge = zkBridgeProxChain1;
+    const sender = await ethers.getSigner(0);
+    const payload = "0x12345678";
+    await zkBridge.connect(sender).setFee(3, 100);
+    let fee = await zkBridge.connect(sender).estimateFee(3, payload);
+
+    expect(fee).to.equal(100);
+  });
+
+  it("setTrustedRemoteAddress", async function () {
+    let zkBridge = zkBridgeProxChain1;
+    const sender = await ethers.getSigner(0);
+    await zkBridge.connect(sender).setTrustedRemoteAddress(3, sender.address);
+    let remoteAddress = await zkBridge.connect(sender).trustedRemoteLookup(3);
+
+    expect(remoteAddress).to.equal(sender.address);
+  });
+
+  it("setMptVerifier", async function () {
+    let zkBridge = zkBridgeProxChain1;
+    const sender = await ethers.getSigner(0);
+    await zkBridge.connect(sender).setMptVerifier(3, sender.address);
+    let remoteAddress = await zkBridge.connect(sender).mptVerifiers(3);
+
+    expect(remoteAddress).to.equal(sender.address);
+  });
+
+  it("setBlockUpdater", async function () {
+    let zkBridge = zkBridgeProxChain1;
+    const sender = await ethers.getSigner(0);
+    await zkBridge.connect(sender).setBlockUpdater(3, sender.address);
+    let remoteAddress = await zkBridge.connect(sender).blockUpdaters(3);
+
+    expect(remoteAddress).to.equal(sender.address);
+  });
+
+  it("setL2MessageReceive", async function () {
+    let zkBridge = zkBridgeProxChain1;
+    const sender = await ethers.getSigner(0);
+    await zkBridge.connect(sender).setL2MessageReceive(3, sender.address);
+    let remoteAddress = await zkBridge.connect(sender).l2MessageReceives(3);
+
+    expect(remoteAddress).to.equal(sender.address);
+  });
+
+  it("setL2MessageSend", async function () {
+    let zkBridge = zkBridgeProxChain1;
+    const sender = await ethers.getSigner(0);
+    await zkBridge.connect(sender).setL2MessageSend(sender.address);
+    let remoteAddress = await zkBridge.connect(sender).l2MessageSend();
+
+    expect(remoteAddress).to.equal(sender.address);
+  });
+
+  it("claimFees", async function () {
+    let zkBridge = zkBridgeProxChain1;
+    const sender = await ethers.getSigner(0);
+    const recipient = sender.address;
+    const payload = "0x12345678";
+
+    const amount = ethers.utils.parseEther("0.1");
+    await zkBridge.connect(sender).setFee(3, amount);
+
+    await zkBridge
+      .connect(sender)
+      .send(3, recipient, payload, { value: ethers.utils.parseEther("1.0") });
+
+    const provider = ethers.provider;
+    const balance1 = await provider.getBalance(zkBridge.address);
+    await zkBridge.connect(sender).claimFees();
+    const balance2 = await provider.getBalance(zkBridge.address);
+    expect(balance1).to.equal(ethers.utils.parseEther("1"));
+    expect(balance2).to.equal(ethers.utils.parseEther("0"));
   });
 });
