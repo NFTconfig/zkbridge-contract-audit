@@ -2,6 +2,7 @@ import 'dotenv/config';
 import "@nomiclabs/hardhat-waffle";
 import "@nomiclabs/hardhat-etherscan";
 import '@typechain/hardhat'
+import "solidity-coverage"
 import './tasks/index'
 
 
