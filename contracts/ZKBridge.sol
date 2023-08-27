@@ -115,14 +115,14 @@ contract ZKBridge is Initializable, OwnableUpgradeable, IZKBridgeInner {
         require(logMessage.srcZkBridge == trustedRemoteLookup[_srcChainId], "Destination chain is not a trusted sourcee");
         require(logMessage.dstChainId == chainId, "Invalid destination chain");
 
-        bytes32 hash = keccak256(abi.encode(_srcChainId, logMessage.srcAddress, logMessage.nonce));
+        bytes32 hash = keccak256(abi.encode(_srcChainId, logMessage.srcAddress, logMessage.dstAddress, logMessage.nonce));
         require(!completedTransfers[hash], "Message already executed.");
         completedTransfers[hash] = true;
 
         Payload memory p = _parsePayload(logMessage.payload);
         if (p.srcChainId != _srcChainId) {
             require(p.dstChainId == chainId, "Invalid destination chain");
-            hash = keccak256(abi.encode(p.srcChainId, p.srcAddress, p.nonce));
+            hash = keccak256(abi.encode(p.srcChainId, p.srcAddress, p.dstAddress, p.nonce));
             require(!completedTransfers[hash], "Message already executed");
             completedTransfers[hash] = true;
             emit ExecutedMessage(p.srcAddress, p.srcChainId, p.nonce, p.dstAddress, p.uaPayload);
@@ -138,7 +138,7 @@ contract ZKBridge is Initializable, OwnableUpgradeable, IZKBridgeInner {
         require(_srcChainId == p.srcChainId, "Invalid srcChainId");
         require(p.dstChainId == chainId, "Invalid destination chain");
 
-        bytes32 hash = keccak256(abi.encode(_srcChainId, _srcAddress, _nonce));
+        bytes32 hash = keccak256(abi.encode(_srcChainId, _srcAddress, _dstAddress, _nonce));
         require(!completedTransfers[hash], "Message already executed");
         completedTransfers[hash] = true;
 
@@ -210,7 +210,7 @@ contract ZKBridge is Initializable, OwnableUpgradeable, IZKBridgeInner {
 
     function setTrustedRemoteAddress(uint16 _remoteChainId, address _remoteAddress) external onlyOwner {
         trustedRemoteLookup[_remoteChainId] = _remoteAddress;
-        emit SetTrustedRemoteAddress(_remoteChainId,_remoteAddress);
+        emit SetTrustedRemoteAddress(_remoteChainId, _remoteAddress);
     }
 
     function setMptVerifier(uint16 _chainId, address _mptVerifier) external onlyOwner {
